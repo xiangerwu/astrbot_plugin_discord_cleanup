@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.codebase-memory/
+dist/
+.env
+*.jsonl
+*.sqlite3
+*cookie*.json
+*storageState*.json

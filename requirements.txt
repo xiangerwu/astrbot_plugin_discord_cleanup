@@ -1,0 +1,1 @@
+# Uses AstrBot's existing py-cord dependency. No extra runtime dependencies.
