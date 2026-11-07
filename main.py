@@ -18,6 +18,7 @@ from .core.cleanup import (
     parse_time_range,
     select_messages,
 )
+from .core.private_command import PRIVATE_ACK, private_callback
 
 PREFIX = "dcclean:"
 PAGE_SIZE = 5
@@ -48,17 +49,72 @@ class DiscordCleanupPlugin(Star):
         self.data_dir = StarTools.get_data_dir("astrbot_plugin_discord_cleanup")
         # ponytail: previews live in memory for five minutes; reload cancels them.
         self.pending = {}
+        self.private_factories = {}
+        self.private_callbacks = {}
+
+    async def initialize(self):
+        await self.bind_private_commands()
+
+    @filter.on_platform_loaded()
+    async def bind_private_commands(self):
+        for platform in self.context.platform_manager.platform_insts:
+            if platform.meta().name != "discord":
+                continue
+            if platform not in self.private_factories:
+                original = platform._create_dynamic_callback
+
+                def factory(name, original=original):
+                    callback = original(name)
+                    return (
+                        self.wrap_private(callback) if name == "dc_clean" else callback
+                    )
+
+                self.private_factories[platform] = (original, factory)
+                platform._create_dynamic_callback = factory
+            client = getattr(platform, "client", None)
+            if client is None:
+                continue  # The adapter creates its client later in run().
+            for command in [
+                *client.application_commands,
+                *client.pending_application_commands,
+            ]:
+                if command.name == "dc_clean":
+                    command.callback = self.wrap_private(command.callback)
+
+    def wrap_private(self, callback):
+        if callback in self.private_callbacks:
+            return callback
+        wrapped = private_callback(callback)
+        self.private_callbacks[wrapped] = callback
+        return wrapped
 
     @filter.command("dc_clean", priority=maxsize + 1)
     async def clean(self, event: AstrMessageEvent, targets: GreedyStr):
         """清理自身訊息：兩個 ISO 時間或訊息 ID／連結；不填顯示用法。"""
         event.stop_event()
         if event.get_platform_name() != "discord":
-            await event.send(
-                event.plain_result("此插件只支援 Discord 伺服器頻道／討論串。")
-            )
             return
         raw = event.message_obj.raw_message
+        if (
+            not isinstance(raw, discord.Interaction)
+            or not event.interaction_followup_webhook
+        ):
+            logger.info(
+                "[discord_cleanup] Text command ignored; use the native /dc_clean command."
+            )
+            return
+        if not (raw.data or {}).get(PRIVATE_ACK):
+            # A public deferred response cannot be made private by a follow-up flag.
+            logger.error(
+                "[discord_cleanup] Private acknowledgement missing; refusing to display a preview."
+            )
+            try:
+                await raw.delete_original_response()
+            except discord.HTTPException:
+                logger.error(
+                    "[discord_cleanup] Could not clear the unverified acknowledgement."
+                )
+            return
         channel = raw.channel
         try:
             bot_id = event.client.user.id
@@ -146,6 +202,11 @@ class DiscordCleanupPlugin(Star):
         if len(parts) != 3:
             return
         _, token, action = parts
+        if not interaction.message.flags.ephemeral:
+            await interaction.followup.send(
+                "請使用原生 /dc_clean 重新建立私人預覽。", ephemeral=True
+            )
+            return
         pending = self.pending.get(token)
         if pending is None or pending.expires <= time.monotonic():
             self.pending.pop(token, None)
@@ -201,14 +262,7 @@ class DiscordCleanupPlugin(Star):
                     f"內容已變更 {counts['changed']} 則；非自身 {counts['refused']} 則；失敗 {counts['failed']} 則。\n"
                     "未刪除項目均保留。紀錄編號：" + token
                 )
-                await interaction.edit_original_response(
-                    content="清理操作已結束，詳細結果僅對操作者顯示。", view=None
-                )
-                await interaction.followup.send(
-                    summary,
-                    ephemeral=True,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
+                await interaction.edit_original_response(content=summary, view=None)
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
         except (discord.HTTPException, OSError) as exc:
@@ -234,11 +288,9 @@ class DiscordCleanupPlugin(Star):
 
     async def reply(self, event, content, **kwargs):
         kwargs["allowed_mentions"] = discord.AllowedMentions.none()
-        if event.interaction_followup_webhook:
-            return await event.interaction_followup_webhook.send(
-                content, wait=True, **kwargs
-            )
-        return await event.message_obj.raw_message.channel.send(content, **kwargs)
+        return await event.interaction_followup_webhook.send(
+            content, wait=True, ephemeral=True, **kwargs
+        )
 
     def render(self, pending):
         start = pending.page * PAGE_SIZE
@@ -291,3 +343,17 @@ class DiscordCleanupPlugin(Star):
 
     async def terminate(self):
         self.pending.clear()
+        for platform, (original, factory) in self.private_factories.items():
+            if platform._create_dynamic_callback is factory:
+                platform._create_dynamic_callback = original
+            client = getattr(platform, "client", None)
+            if client is None:
+                continue
+            for command in [
+                *client.application_commands,
+                *client.pending_application_commands,
+            ]:
+                if command.callback in self.private_callbacks:
+                    command.callback = self.private_callbacks[command.callback]
+        self.private_factories.clear()
+        self.private_callbacks.clear()

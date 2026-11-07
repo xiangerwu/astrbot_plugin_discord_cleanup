@@ -7,20 +7,27 @@ Only imports/dependencies are substituted; upstream definitions run unchanged.
 import __future__
 
 import ast
+import asyncio
 import importlib
 import logging
 import sys
 import types
 import unittest
 from pathlib import Path
+from typing import cast
 from unittest.mock import AsyncMock, Mock
 
+import discord
 import test_cleanup as fixtures
 
 
-def load_definitions(root, relative, names, namespace):
+def load_definitions(root, relative, names, namespace, container=None):
     path = root / relative
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    if container:
+        tree.body = next(
+            node for node in tree.body if getattr(node, "name", None) == container
+        ).body
     tree.body = [node for node in tree.body if getattr(node, "name", None) in names]
     assert len(tree.body) == len(names), f"Missing upstream definitions: {path}"
     exec(  # noqa: S102 - Execute definitions from the explicitly supplied, trusted AstrBot checkout.
@@ -87,6 +94,23 @@ def main(root):
     load_definitions(
         root, "astrbot/core/pipeline/waking_check/stage.py", ["WakingCheckStage"], ns
     )
+    ns.update(
+        asyncio=asyncio,
+        cast=cast,
+        MessageType=types.SimpleNamespace(
+            GROUP_MESSAGE="group", FRIEND_MESSAGE="friend"
+        ),
+        AstrBotMessage=lambda: types.SimpleNamespace(group=None),
+        MessageMember=lambda **kwargs: types.SimpleNamespace(**kwargs),
+        Plain=lambda **kwargs: types.SimpleNamespace(**kwargs),
+    )
+    load_definitions(
+        root,
+        "astrbot/core/platform/sources/discord/discord_platform_adapter.py",
+        ["_create_dynamic_callback"],
+        ns,
+        container="DiscordPlatformAdapter",
+    )
 
     filters = sys.modules["astrbot.api.event"].filter
     filters.button_action = ns["register_button_action"]
@@ -133,7 +157,56 @@ def main(root):
             await item.handler(self.plugin, event)
 
     fixtures.PluginTests.dispatch_button = dispatch_button
-    suite = unittest.defaultTestLoader.loadTestsFromTestCase(fixtures.PluginTests)
+
+    class RoutingTests(fixtures.PluginTests):
+        async def test_native_core_callback_preserves_private_ack_and_event(self):
+            adapter = types.SimpleNamespace(
+                bot_self_id="10",
+                handle_msg=AsyncMock(),
+                _get_message_type=lambda *args: "group",
+                _get_channel_id=lambda channel: str(channel.id),
+                _get_group_name=lambda channel: "test",
+            )
+            interaction = types.SimpleNamespace(
+                type=discord.InteractionType.application_command,
+                id=1,
+                token="test",
+                data={},
+                _session=None,
+                _state=types.SimpleNamespace(
+                    http=types.SimpleNamespace(proxy=None, proxy_auth=None)
+                ),
+            )
+            response = discord.InteractionResponse(interaction)
+            ctx = types.SimpleNamespace(
+                defer=response.defer,
+                interaction=interaction,
+                followup=object(),
+                channel=types.SimpleNamespace(id=50),
+                channel_id=50,
+                guild_id=60,
+                author=types.SimpleNamespace(id=90, display_name="owner"),
+            )
+            transport = types.SimpleNamespace(create_interaction_response=AsyncMock())
+            from discord.interactions import async_context
+
+            context_token = async_context.set(transport)
+            try:
+                callback = ns["_create_dynamic_callback"](adapter, "dc_clean")
+                await fixtures.main.private_callback(callback)(ctx, "1 2")
+            finally:
+                async_context.reset(context_token)
+            request = transport.create_interaction_response.call_args.kwargs
+            self.assertEqual(request["type"], 5)
+            self.assertEqual(request["data"], {"flags": 64})
+            adapter.handle_msg.assert_awaited_once()
+            message, followup = adapter.handle_msg.call_args.args
+            self.assertEqual(message.message_str, "dc_clean 1 2")
+            self.assertIs(message.raw_message, interaction)
+            self.assertTrue(message.raw_message.data[fixtures.main.PRIVATE_ACK])
+            self.assertIs(followup, ctx.followup)
+
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(RoutingTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)
     return 0 if result.wasSuccessful() else 1
 

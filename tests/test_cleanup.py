@@ -46,6 +46,7 @@ sys.modules["astrbot.api.event"].AstrMessageEvent = object
 sys.modules["astrbot.api.event"].filter = types.SimpleNamespace(
     command=command,
     button_action=lambda *a, **kw: lambda fn: fn,
+    on_platform_loaded=lambda *a, **kw: lambda fn: fn,
     event_message_type=lambda *a, **kw: lambda fn: fn,
     EventMessageType=types.SimpleNamespace(ALL="all"),
 )
@@ -315,11 +316,75 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
 
 
 class PluginTests(unittest.IsolatedAsyncioTestCase):
+    async def test_private_slash_ack_existing_future_and_reload(self):
+        calls = []
+
+        class Platform:
+            def meta(self):
+                return types.SimpleNamespace(name="discord")
+
+            def _create_dynamic_callback(self, name):
+                async def callback(ctx, params=None):
+                    await ctx.defer()
+                    calls.append((name, params, ctx.channel))
+
+                return callback
+
+        platform = Platform()
+        starting_platform = (
+            Platform()
+        )  # The platform hook can run before client creation.
+        own = discord.SlashCommand(
+            name="dc_clean", func=platform._create_dynamic_callback("dc_clean")
+        )
+        other = discord.SlashCommand(
+            name="other", func=platform._create_dynamic_callback("other")
+        )
+        original_own, original_other = own.callback, other.callback
+        platform.client = types.SimpleNamespace(
+            application_commands=[own, other], pending_application_commands=[]
+        )
+        plugin = main.DiscordCleanupPlugin(
+            types.SimpleNamespace(
+                platform_manager=types.SimpleNamespace(
+                    platform_insts=[platform, starting_platform]
+                )
+            )
+        )
+        ctx = types.SimpleNamespace(
+            defer=AsyncMock(), channel=50, interaction=types.SimpleNamespace(data={})
+        )
+        await plugin.initialize()
+        await plugin.bind_private_commands()
+        await starting_platform._create_dynamic_callback("dc_clean")(ctx, "help")
+        ctx.defer.assert_awaited_once_with(ephemeral=True)
+        ctx.defer.reset_mock()
+        await own.callback(ctx, "1 2")
+        ctx.defer.assert_awaited_once_with(ephemeral=True)
+        self.assertEqual(calls[-1], ("dc_clean", "1 2", 50))
+        self.assertIs(other.callback, original_other)
+        ctx.defer.reset_mock()
+        future = discord.SlashCommand(
+            name="dc_clean", func=platform._create_dynamic_callback("dc_clean")
+        )
+        platform.client.pending_application_commands.append(future)
+        await future.callback(ctx, "help")
+        ctx.defer.assert_awaited_once_with(ephemeral=True)
+        await plugin.terminate()
+        self.assertIs(own.callback, original_own)
+        ctx.defer.reset_mock()
+        await future.callback(ctx)
+        ctx.defer.assert_awaited_once_with()
+
     def setup_event(self):
         self.channel = Channel()
+        self.reply = AsyncMock(return_value=types.SimpleNamespace(id=999))
         self.config = {"admins_id": ["90"]}
         self.context = types.SimpleNamespace(get_config=Mock(return_value=self.config))
         self.plugin = main.DiscordCleanupPlugin(self.context)
+        raw = Mock(spec=discord.Interaction)
+        raw.channel = self.channel
+        raw.data = {main.PRIVATE_ACK: True}
         self.event = types.SimpleNamespace(
             get_platform_name=lambda: "discord",
             get_self_id=lambda: "10",
@@ -327,11 +392,67 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             unified_msg_origin="discord:GroupMessage:50",
             stop_event=Mock(),
             client=types.SimpleNamespace(user=types.SimpleNamespace(id=10)),
-            interaction_followup_webhook=None,
-            message_obj=types.SimpleNamespace(
-                raw_message=types.SimpleNamespace(channel=self.channel)
+            interaction_followup_webhook=types.SimpleNamespace(send=self.reply),
+            message_obj=types.SimpleNamespace(raw_message=raw),
+        )
+
+    async def test_plain_text_and_public_ack_never_publish_preview(self):
+        self.setup_event()
+        self.channel.add(1)
+        self.event.message_obj.raw_message = types.SimpleNamespace(channel=self.channel)
+        self.event.interaction_followup_webhook = None
+        await self.plugin.clean(self.event, "1")
+        self.reply.assert_not_awaited()
+        self.channel.send.assert_not_awaited()
+        self.assertEqual(self.plugin.pending, {})
+        self.setup_event()
+        raw = self.event.message_obj.raw_message
+        raw.data = {}
+        await self.plugin.clean(self.event, "1")
+        raw.delete_original_response.assert_awaited_once()
+        self.reply.assert_not_awaited()
+        self.channel.send.assert_not_awaited()
+        self.assertEqual(self.plugin.pending, {})
+
+    async def test_private_ack_uses_real_discord_flags(self):
+        parent = types.SimpleNamespace(
+            type=discord.InteractionType.application_command,
+            id=1,
+            token="test",
+            data={},
+            _session=None,
+            _state=types.SimpleNamespace(
+                http=types.SimpleNamespace(proxy=None, proxy_auth=None)
             ),
         )
+        response = discord.InteractionResponse(parent)
+        ctx = types.SimpleNamespace(defer=response.defer, interaction=parent)
+        adapter = types.SimpleNamespace(create_interaction_response=AsyncMock())
+        from discord.interactions import async_context
+
+        context_token = async_context.set(adapter)
+        try:
+
+            async def original(ctx):
+                await ctx.defer()
+
+            await main.private_callback(original)(ctx)
+        finally:
+            async_context.reset(context_token)
+        request = adapter.create_interaction_response.call_args.kwargs
+        self.assertEqual(request["type"], 5)
+        self.assertEqual(request["data"], {"flags": 64})
+        self.assertTrue(parent.data[main.PRIVATE_ACK])
+
+    async def test_public_button_preview_is_rejected(self):
+        self.setup_event()
+        raw = self.button_event("old", "confirm")
+        raw.message.flags = discord.MessageFlags()
+        await self.dispatch_button()
+        raw.edit_original_response.assert_not_awaited()
+        raw.followup.send.assert_awaited_once()
+        self.assertTrue(raw.followup.send.call_args.kwargs["ephemeral"])
+        self.channel.send.assert_not_awaited()
 
     def button_event(self, token, action, owner=90, channel_id=50, message_id=999):
         raw = Mock(spec=discord.Interaction)
@@ -339,7 +460,9 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         raw.channel = self.channel
         raw.channel_id = channel_id
         raw.user = types.SimpleNamespace(id=owner)
-        raw.message = types.SimpleNamespace(id=message_id)
+        raw.message = types.SimpleNamespace(
+            id=message_id, flags=discord.MessageFlags(ephemeral=True)
+        )
         raw.followup = types.SimpleNamespace(send=AsyncMock())
         raw.edit_original_response = AsyncMock()
         self.event.message_obj.raw_message = raw
@@ -357,14 +480,16 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             self.channel.add(number)
         await self.plugin.clean(self.event, "1,2,3,4,5,6")
         self.event.stop_event.assert_called()
-        self.channel.send.assert_awaited_once()
+        self.reply.assert_awaited_once()
+        self.assertTrue(self.reply.call_args.kwargs["ephemeral"])
+        self.channel.send.assert_not_awaited()
         self.assertEqual(self.channel.deleted, [])
         token, pending = next(iter(self.plugin.pending.items()))
         self.assertLess(len(self.plugin.render(pending)), 2000)
         raw = self.button_event(token, "next")
         await self.dispatch_button()
         raw.edit_original_response.assert_awaited_once()
-        self.channel.send.assert_awaited_once()
+        self.reply.assert_awaited_once()
         self.assertEqual(pending.page, 1)
         view = raw.edit_original_response.call_args.kwargs["view"]
         self.assertEqual(
@@ -391,18 +516,15 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             await self.dispatch_button()
             self.assertEqual(raw.edit_original_response.await_count, 2)
             self.assertEqual(self.channel.deleted, list(range(1, 7)))
-            raw.followup.send.assert_awaited_once()
-            private_result = raw.followup.send.call_args
-            self.assertTrue(private_result.kwargs["ephemeral"])
-            self.assertIn("刪除 6 則", private_result.args[0])
-            self.assertIn(token, private_result.args[0])
-            public_result = raw.edit_original_response.call_args.kwargs["content"]
-            self.assertNotIn("刪除 6 則", public_result)
-            self.assertNotIn(token, public_result)
+            raw.followup.send.assert_not_awaited()
+            private_result = raw.edit_original_response.call_args.kwargs["content"]
+            self.assertTrue(raw.message.flags.ephemeral)
+            self.assertIn("刪除 6 則", private_result)
+            self.assertIn(token, private_result)
             await self.dispatch_button()
             self.assertEqual(self.channel.deleted, list(range(1, 7)))
-            self.assertEqual(raw.followup.send.await_count, 2)
-        self.channel.send.assert_awaited_once()
+            raw.followup.send.assert_awaited_once()
+        self.reply.assert_awaited_once()
         self.channel.guild.fetch_member.assert_not_awaited()
 
     async def test_wrong_operator_channel_message_and_revoked_permission(self):
@@ -461,8 +583,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         await self.plugin.clean(self.event, "1")
         self.assertEqual(self.plugin.pending, {})
         self.assertEqual(self.channel.deleted, [])
-        self.channel.send.assert_awaited_once()
-        self.assertIn("AstrBot", self.channel.send.call_args.args[0])
+        self.reply.assert_awaited_once()
+        self.assertIn("AstrBot", self.reply.call_args.args[0])
 
     async def test_unified_command_detects_targets_time_and_shows_usage(self):
         self.assertEqual(registered_commands, ["dc_clean"])
@@ -488,8 +610,8 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                 self.channel.add(1)
                 await self.plugin.clean(self.event, arguments)
                 self.assertEqual(self.plugin.pending, {})
-                self.channel.send.assert_awaited_once()
-                self.assertIn("/dc_clean", self.channel.send.call_args.args[0])
+                self.reply.assert_awaited_once()
+                self.assertIn("/dc_clean", self.reply.call_args.args[0])
                 self.assertEqual(self.channel.deleted, [])
 
     async def test_slash_followup_and_markdown_size(self):
@@ -504,7 +626,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.event.interaction_followup_webhook = webhook
         await self.plugin.clean(self.event, "1,2,3,4,5")
         webhook.send.assert_awaited_once()
-        self.channel.send.assert_not_awaited()
+        self.reply.assert_not_awaited()
         args, kwargs = webhook.send.call_args
         self.assertLess(len(args[0]), 2000)
         self.assertNotIn("@everyone", args[0])

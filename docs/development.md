@@ -4,6 +4,10 @@
 
 `main.py` 接入 AstrBot 指令與 Discord 按鈕事件，管理短效預覽。`core/cleanup.py` 負責解析目標、查詢、作者檢查、刪除與紀錄。沒有自建 HTTP client、額外 Token、資料庫、排程或 LLM 工具，沿用 AstrBot 的 Pycord client 及 rate-limit 處理。
 
+v0.1.5 僅接受原生斜線指令。AstrBot 4.29.4 原本的動態回呼會先 `ctx.defer()`，預設為公開；此時僅在 followup 加 `ephemeral=True` 不足以保證隱私。插件在初始化／平台載入時，僅包裝 `/dc_clean` 的既有回呼及其後續建立工廠，由 `core/private_command.py` 的 context 代理將這一次 defer 設為私人，保留原 adapter 的事件建構及分派。其他指令不變，卸載還原回呼；平台尚未建立 client 時先包裝工廠。
+
+成功私人 defer 後在原 interaction 上留下內部標記。指令處理器沒有此標記時不顯示預覽，普通文字入口也不發公開回覆。預覽用 ephemeral followup 建立，四個按鈕、取消、進度與完成結果均編輯同一則私人訊息；公開舊按鈕拒絕操作。沒有群組公開完成提示，也沒有另外一則完成回覆。
+
 AstrBot 4.29.4 的 Discord client 會先 acknowledge 按鈕，再轉成 AstrMessageEvent。本插件以 `View.stop()` 停止原生 Pycord callback，保留按鈕外觀，使用 `@filter.button_action()` 接手自身 `dcclean:` 前綴，並 `stop_event()`，避免另一個 callback 或 LLM 回覆。其他前綴直接返回。此方式亦支援沒有 `store=False` 參數的 Pycord 2.6.1。原生斜線指令已由 adapter defer，因此預覽使用它的 followup；按鈕後續編輯原訊息。
 
 v0.1.1 使用一般 `event_message_type(ALL)` 處理器，會被 WakingCheckStage 的按鈕專用篩選跳過，優先序無法繞過。v0.1.2 修正這個共同入口，四個按鈕沿用相同的權限與清單驗證。
@@ -21,11 +25,11 @@ ruff format --check .
 
 只跑本機測試時可安裝 `py-cord==2.6.1`、`ruff`、`PyYAML`；Python 3.13+ 另需 `audioop-lts`，AstrBot 本身已宣告這項相容依賴。這些開發環境檔案不放進發布包。
 
-2026-11-08（v0.1.4）：Windows／Python 3.14、Pycord 2.6.1 的 **17 項單元測試與 7 項 AstrBot 路由測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。v0.1.2 路由修正前有 4 項失敗；v0.1.4 作者 ID 資格修正前有 3 項失敗，修正後全部通過。私人完成結果測試也確認過修正前失敗、修正後通過。尚未將此版部署到運行中的 AstrBot，也尚未做此版的真實 Discord 點擊與刪除驗收。
+2026-11-08（v0.1.5）：Windows／Python 3.14、Pycord 2.6.1 的 **21 項單元測試與 12 項 AstrBot 路由／原生回呼測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。包含實際 Pycord defer 產生 `type=5, flags=64`，以及原 AstrBot 回呼建構的事件保留私人標記。尚未將此版部署到運行中的 AstrBot，也尚未做此版的真實 Discord 點擊與刪除驗收。
 
-自身訊息以 Discord 回傳的精確作者 ID 及目前頻道判定，不依 webhook 或互動資料限制訊息形式；共用 `is_own` 同時保護選取和刪除。測試包含真實 Pycord `Message` 解析互動回覆 payload、有無互動資料皆接受同一作者，以及預覽後作者變更時拒絕刪除。完成統計透過 `interaction.followup.send(..., ephemeral=True)` 發出，公開預覽只更新簡短狀態；測試核對私人旗標、統計與紀錄編號不出現在公開完成內容。
+自身訊息以 Discord 回傳的精確作者 ID 及目前頻道判定，不依 webhook 或互動資料限制訊息形式；共用 `is_own` 同時保護選取和刪除。測試包含真實 Pycord `Message` 解析互動回覆 payload、有無互動資料皆接受同一作者，以及預覽後作者變更時拒絕刪除。預覽與完成結果同屬一則私人訊息，測試確認不呼叫頻道發送，也不另發完成 followup。
 
-路由測試需指定 AstrBot v4.29.4 原始碼目錄，讀取 `astrbot/core/pipeline/waking_check/stage.py`、`astrbot/core/star/filter/button_action.py`、`astrbot/core/star/filter/event_message_type.py`、`astrbot/core/star/register/star_handler.py`。以 AST 選取原始定義後原樣執行按鈕註冊、篩選及 WakingCheckStage，重用插件測試；不複製路由邏輯、不啟動機器人。只替換網路、資料庫與無關服務邊界。必須與單元測試分開執行，避免替換的載入邊界互相影響。
+路由測試需指定 AstrBot v4.29.4 原始碼目錄，讀取 `astrbot/core/pipeline/waking_check/stage.py`、`astrbot/core/star/filter/button_action.py`、`astrbot/core/star/filter/event_message_type.py`、`astrbot/core/star/register/star_handler.py`、`astrbot/core/platform/sources/discord/discord_platform_adapter.py`。以 AST 選取原始定義後原樣執行按鈕註冊、篩選、WakingCheckStage 及 `_create_dynamic_callback`，重用插件測試；不複製路由邏輯、不啟動機器人。只替換網路、資料庫與無關服務邊界。必須與單元測試分開執行，避免替換的載入邊界互相影響。
 
 按鈕驗證包含下一頁、上一頁、首尾頁停用與頁碼界限、確認全清單且只執行一次、取消更新原預覽且保留所有訊息。四種操作均檢查錯誤操作者／頻道／預覽訊息以及撤銷 AstrBot 管理權限；也檢查其他插件按鈕不被回覆或攔截。目標數量另驗證 100 個不同連結通過、重複連結不重複計數、101 個拒絕。
 
