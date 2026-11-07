@@ -52,7 +52,15 @@ def is_own(message, channel_id, bot_id):
     return (
         message.channel.id == channel_id
         and message.author.id == bot_id
-        and message.webhook_id is None
+        and (
+            message.webhook_id is None
+            # Interaction webhooks use the application ID. Pycord 2.6.1 does not
+            # expose Message.application_id; require its webhook ID and interaction metadata.
+            or (
+                message.webhook_id == bot_id
+                and message.interaction_metadata is not None
+            )
+        )
     )
 
 

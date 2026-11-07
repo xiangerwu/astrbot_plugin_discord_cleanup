@@ -95,7 +95,15 @@ class Channel:
 
         return iterate()
 
-    def add(self, message_id, author=10, content="hello", webhook=None, created=None):
+    def add(
+        self,
+        message_id,
+        author=10,
+        content="hello",
+        webhook=None,
+        created=None,
+        interaction=False,
+    ):
         async def delete(**kwargs):
             self.deleted.append(message_id)
             del self.messages[message_id]
@@ -106,6 +114,7 @@ class Channel:
             channel=self,
             content=content,
             webhook_id=webhook,
+            interaction_metadata=types.SimpleNamespace() if interaction else None,
             attachments=[],
             embeds=[],
             created_at=created or datetime(2026, 11, 7, 20, 7, tzinfo=UTC),
@@ -152,6 +161,70 @@ class ParsingTests(unittest.TestCase):
 
 
 class CleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def test_own_application_replies_and_identity_recheck(self):
+        channel = Channel()
+        channel.add(1, webhook=10, interaction=True)
+        channel.add(2, webhook=10, interaction=True)
+        channel.add(3, author=20, webhook=10, interaction=True)
+        channel.add(4, webhook=20, interaction=True)
+        channel.add(5, author=20)
+        channel.add(6, webhook=10)
+        rows, skipped = await cleanup.select_messages(
+            channel, 10, ids=list(range(1, 7))
+        )
+        self.assertEqual([row["id"] for row in rows], [1, 2])
+        self.assertEqual(skipped, 4)
+        channel.messages[2].webhook_id = 20
+        with tempfile.TemporaryDirectory() as directory:
+            counts = await cleanup.delete_selected(
+                channel, 10, rows, 90, Path(directory) / "audit.jsonl"
+            )
+        self.assertEqual(channel.deleted, [1])
+        self.assertEqual(counts["deleted"], 1)
+        self.assertEqual(counts["refused"], 1)
+
+    async def test_actual_pycord_interaction_message_ownership(self):
+        client = discord.Client(intents=discord.Intents.none())
+        data = {
+            "id": "1",
+            "type": 20,
+            "webhook_id": "10",
+            "application_id": "10",
+            "author": {
+                "id": "10",
+                "username": "bot",
+                "discriminator": "0",
+                "avatar": None,
+                "bot": True,
+            },
+            "content": "registered",
+            "attachments": [],
+            "embeds": [],
+            "edited_timestamp": None,
+            "pinned": False,
+            "mention_everyone": False,
+            "tts": False,
+            "interaction_metadata": {
+                "id": "2",
+                "type": 2,
+                "user": {
+                    "id": "90",
+                    "username": "owner",
+                    "discriminator": "0",
+                    "avatar": None,
+                },
+                "authorizing_integration_owners": {"0": "60"},
+            },
+        }
+        message = discord.Message(
+            state=client._connection,
+            channel=client.get_partial_messageable(50),
+            data=data,
+        )
+        self.assertTrue(cleanup.is_own(message, 50, 10))
+        message.interaction_metadata = None
+        self.assertFalse(cleanup.is_own(message, 50, 10))
+
     async def test_exact_ids_filter_other_people_bots_and_webhooks(self):
         channel = Channel()
         channel.add(1)
@@ -316,9 +389,17 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             await self.dispatch_button()
             self.assertEqual(raw.edit_original_response.await_count, 2)
             self.assertEqual(self.channel.deleted, list(range(1, 7)))
+            raw.followup.send.assert_awaited_once()
+            private_result = raw.followup.send.call_args
+            self.assertTrue(private_result.kwargs["ephemeral"])
+            self.assertIn("刪除 6 則", private_result.args[0])
+            self.assertIn(token, private_result.args[0])
+            public_result = raw.edit_original_response.call_args.kwargs["content"]
+            self.assertNotIn("刪除 6 則", public_result)
+            self.assertNotIn(token, public_result)
             await self.dispatch_button()
             self.assertEqual(self.channel.deleted, list(range(1, 7)))
-            raw.followup.send.assert_awaited_once()
+            self.assertEqual(raw.followup.send.await_count, 2)
         self.channel.send.assert_awaited_once()
         self.channel.guild.fetch_member.assert_not_awaited()
 

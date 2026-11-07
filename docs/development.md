@@ -21,7 +21,9 @@ ruff format --check .
 
 只跑本機測試時可安裝 `py-cord==2.6.1`、`ruff`、`PyYAML`；Python 3.13+ 另需 `audioop-lts`，AstrBot 本身已宣告這項相容依賴。這些開發環境檔案不放進發布包。
 
-2026-11-08（v0.1.2）：Windows／Python 3.14、Pycord 2.6.1 的 **15 項單元測試與 7 項 AstrBot 路由測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。路由測試在修正前有 4 項失敗，均為按鈕未進入處理器；修正後全部通過。尚未將此版部署到運行中的 AstrBot，也尚未做真實 Discord 點擊與刪除驗收。
+2026-11-08（v0.1.3）：Windows／Python 3.14、Pycord 2.6.1 的 **17 項單元測試與 7 項 AstrBot 路由測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。v0.1.2 路由修正前有 4 項失敗，均為按鈕未進入處理器；修正後全部通過。v0.1.3 的自身互動回覆選取與私人完成結果測試也各自確認過修正前失敗、修正後通過。尚未將此版部署到運行中的 AstrBot，也尚未做此版的真實 Discord 點擊與刪除驗收。
+
+自身互動回覆使用應用程式 webhook。Pycord 2.6.1 不提供 `Message.application_id`，因此以精確作者 ID、應用程式 webhook ID 與 `interaction_metadata` 共同辨識；共用 `is_own` 同時保護選取和刪除。測試包含真實 Pycord `Message` 解析互動回覆 payload，以及預覽後身分變更時拒絕刪除。完成統計透過 `interaction.followup.send(..., ephemeral=True)` 發出，公開預覽只更新簡短狀態；測試核對私人旗標、統計與紀錄編號不出現在公開完成內容。
 
 路由測試需指定 AstrBot v4.29.4 原始碼目錄，讀取 `astrbot/core/pipeline/waking_check/stage.py`、`astrbot/core/star/filter/button_action.py`、`astrbot/core/star/filter/event_message_type.py`、`astrbot/core/star/register/star_handler.py`。以 AST 選取原始定義後原樣執行按鈕註冊、篩選及 WakingCheckStage，重用插件測試；不複製路由邏輯、不啟動機器人。只替換網路、資料庫與無關服務邊界。必須與單元測試分開執行，避免替換的載入邊界互相影響。
 
@@ -41,5 +43,6 @@ ruff format --check .
 - [指令參數與 GreedyStr](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.4/astrbot/core/star/filter/command.py)
 - [Pycord UI API](https://docs.pycord.dev/en/stable/api/ui_kit.html)
 - [Discord Delete Message API](https://docs.discord.com/developers/resources/message#delete-message)
+- [Discord 互動回覆與應用程式 webhook](https://docs.discord.com/developers/interactions/receiving-and-responding#followup-messages)
 
 API 刪除成功計入「刪除」；已不存在計入「原已不存在」；內容變更與非自身作者一律保留。HTTP 失敗會逐筆記錄，檔案寫入或中斷時停止後續工作；不自動重跑已確認清單。

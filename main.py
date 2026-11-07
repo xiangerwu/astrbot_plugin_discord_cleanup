@@ -201,7 +201,14 @@ class DiscordCleanupPlugin(Star):
                     f"內容已變更 {counts['changed']} 則；非自身 {counts['refused']} 則；失敗 {counts['failed']} 則。\n"
                     "未刪除項目均保留。紀錄編號：" + token
                 )
-                await interaction.edit_original_response(content=summary, view=None)
+                await interaction.edit_original_response(
+                    content="清理操作已結束，詳細結果僅對操作者顯示。", view=None
+                )
+                await interaction.followup.send(
+                    summary,
+                    ephemeral=True,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
         except ValueError as exc:
             await interaction.followup.send(str(exc), ephemeral=True)
         except (discord.HTTPException, OSError) as exc:

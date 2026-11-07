@@ -4,7 +4,7 @@
 
 ![Own-message cleanup with a single paginated preview](assets/intro.png)
 
-An AstrBot plugin that deletes only messages authored by the **currently connected bot** in the current Discord guild channel or thread. Select a time window or explicit message links/IDs, review the list, then confirm. Human messages, other bots and webhooks are excluded.
+An AstrBot plugin that deletes only messages authored by the **currently connected bot** in the current Discord guild channel or thread. Select a time window or explicit message links/IDs, review the list, then confirm. Human messages, other bots and external webhooks are excluded. Verified interaction replies from this bot's application are supported.
 
 ## Install
 
@@ -38,10 +38,10 @@ Times are start-inclusive/end-exclusive. Naive ISO timestamps use UTC+08:00; exp
 
 v0.1.2 fixes button routing through AstrBot 4.29.4's dedicated button handler. Previous is disabled on the first page, Next on the last; both are disabled for a single page. After upgrading from v0.1.1, reload the plugin and run `/dc_clean` again because old previews expire on reload. This fix does not require reconnecting Discord.
 
-- One public preview message, five entries per page. Navigation, cancellation, progress and results edit the same message. No per-target notifications or LLM calls.
+- One public preview message, five entries per page. Navigation, cancellation, progress and a brief completion status edit the same message. Detailed completion counts and the audit ID are sent separately as an ephemeral response visible only to the confirming operator, not as a DM. No per-target notifications or LLM calls.
 - The operator must be registered in AstrBot's current session configuration (`admins_id`). Discord moderator status or Manage Messages is not required and does not grant access. Only the original operator can confirm, and the current AstrBot admin list is checked again; removal after preview prevents confirmation.
 - Confirmation applies to **all listed IDs**, not just the visible page. New messages are never added during confirmation.
-- Re-fetch and verify each author's exact bot ID before deletion. Edited content, attachments or embeds are skipped. Webhooks are excluded even when they resemble the bot.
+- Re-fetch and verify each author's exact bot ID before deletion. Edited content, attachments or embeds are skipped. Since v0.1.3, an interaction reply is also accepted when its application webhook ID equals this bot's ID and Discord interaction metadata is present. Other webhooks remain excluded, regardless of name or avatar. Reload the plugin and create a new preview after updating.
 - Previews expire after five minutes, on replacement by the same operator/channel, or on plugin reload. At most 100 targets and 1000 scanned messages per request; exceeding a limit rejects the selection.
 - Uses individual own-message deletion rather than bulk purge. The bot does not need Manage Messages just to delete its own messages.
 
