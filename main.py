@@ -1,3 +1,4 @@
+import re
 import secrets
 import time
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ import discord
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools
+from astrbot.core.star.filter.command import GreedyStr
 
 from .core.cleanup import (
     DISPLAY_TZ,
@@ -20,6 +22,12 @@ from .core.cleanup import (
 PREFIX = "dcclean:"
 PAGE_SIZE = 5
 PREVIEW_SECONDS = 300
+USAGE = (
+    "用法（僅 AstrBot 登記的管理員）：\n"
+    "時間：`/dc_clean 2026-11-08T04:07 2026-11-08T04:09`\n"
+    "訊息：`/dc_clean 訊息ID或完整連結`，多筆用空格或逗號分隔。\n"
+    "時間預設 UTC+08:00，包含開始、不含結束；只預覽本頻道的自身訊息，確認後才刪除。"
+)
 
 
 @dataclass
@@ -41,19 +49,10 @@ class DiscordCleanupPlugin(Star):
         # ponytail: previews live in memory for five minutes; reload cancels them.
         self.pending = {}
 
-    @filter.command("dc_clean_time", priority=maxsize + 1)
-    async def clean_time(self, event: AstrMessageEvent, start: str = "", end: str = ""):
-        """預覽時間範圍內的自身訊息：開始 結束（ISO 時間，預設 UTC+08:00）。"""
+    @filter.command("dc_clean", priority=maxsize + 1)
+    async def clean(self, event: AstrMessageEvent, targets: GreedyStr):
+        """清理自身訊息：兩個 ISO 時間或訊息 ID／連結；不填顯示用法。"""
         event.stop_event()
-        await self.preview(event, start=start, end=end)
-
-    @filter.command("dc_clean_messages", priority=maxsize + 1)
-    async def clean_messages(self, event: AstrMessageEvent, targets: str = ""):
-        """預覽指定的自身訊息：訊息 ID 或連結，多筆以逗號分隔、不要加空格。"""
-        event.stop_event()
-        await self.preview(event, targets=targets)
-
-    async def preview(self, event, *, targets=None, start="", end=""):
         if event.get_platform_name() != "discord":
             await event.send(
                 event.plain_result("此插件只支援 Discord 伺服器頻道／討論串。")
@@ -66,7 +65,7 @@ class DiscordCleanupPlugin(Star):
             if str(bot_id) != str(event.get_self_id()):
                 raise ValueError("機器人身分不一致，已停止。")
             owner_id = int(event.get_sender_id())
-            await self.check_operator(channel, owner_id)
+            self.check_operator(event, channel)
             self.pending = {
                 key: item
                 for key, item in self.pending.items()
@@ -79,11 +78,24 @@ class DiscordCleanupPlugin(Star):
                 if (item.owner_id, item.channel_id, item.bot_id)
                 != (owner_id, channel.id, bot_id)
             }
-            if targets is not None:
-                ids = parse_ids(targets, channel.guild.id, channel.id)
+            targets = targets.strip()
+            if not targets or targets.lower() in {"help", "幫助", "說明"}:
+                await self.reply(event, USAGE)
+                return
+            ids = time_range = None
+            try:
+                if re.match(r"\d{4}-", targets):
+                    parts = targets.split()
+                    if len(parts) != 2:
+                        raise ValueError("請提供開始與結束兩個時間。")
+                    time_range = parse_time_range(*parts)
+                else:
+                    ids = parse_ids(targets, channel.guild.id, channel.id)
+            except ValueError as exc:
+                raise ValueError(f"{exc}\n\n{USAGE}") from exc
+            if ids is not None:
                 rows, skipped = await select_messages(channel, bot_id, ids=ids)
             else:
-                time_range = parse_time_range(start, end)
                 rows, skipped = await select_messages(
                     channel, bot_id, time_range=time_range
                 )
@@ -151,7 +163,7 @@ class DiscordCleanupPlugin(Star):
             )
             return
         try:
-            await self.check_operator(interaction.channel, pending.owner_id)
+            self.check_operator(event, interaction.channel)
             if action in {"prev", "next"}:
                 last_page = (len(pending.rows) - 1) // PAGE_SIZE
                 pending.page = max(
@@ -202,12 +214,15 @@ class DiscordCleanupPlugin(Star):
                 view=None,
             )
 
-    async def check_operator(self, channel, owner_id):
+    def check_operator(self, event, channel):
         if getattr(channel, "guild", None) is None:
             raise ValueError("請在 Discord 伺服器的文字頻道／討論串使用，私訊不支援。")
-        member = await channel.guild.fetch_member(owner_id)
-        if member.bot or not channel.permissions_for(member).manage_messages:
-            raise ValueError("只有在此頻道具備「管理訊息」權限的成員可以清理。")
+        # Read the current session's admin list again for every button interaction.
+        config = self.context.get_config(event.unified_msg_origin)
+        if str(event.get_sender_id()) not in config.get("admins_id", []):
+            raise ValueError(
+                "只有 AstrBot 登記的管理員可以清理，請在 AstrBot 管理員設定中加入你的 Discord 使用者 ID。"
+            )
 
     async def reply(self, event, content, **kwargs):
         kwargs["allowed_mentions"] = discord.AllowedMentions.none()

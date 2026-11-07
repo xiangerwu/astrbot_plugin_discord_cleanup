@@ -18,7 +18,9 @@ ruff format --check .
 
 只跑本機測試時可安裝 `py-cord==2.6.1`、`ruff`、`PyYAML`；Python 3.13+ 另需 `audioop-lts`，AstrBot 本身已宣告這項相容依賴。這些開發環境檔案不放進發布包。
 
-2026-11-08：Windows／Python 3.14、Pycord 2.6.1 的 **12 項測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。圖片已確認：logo 為 1254×1254 RGBA（包含透明像素），README 橫幅為 1672×941 RGB。尚未安裝到運行中的 AstrBot，也尚未做真實 Discord 按鈕與刪除驗收。
+2026-11-08（v0.1.1）：Windows／Python 3.14、Pycord 2.6.1 的 **13 項測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。圖片已確認：logo 為 1254×1254 RGBA（包含透明像素），README 橫幅為 1672×941 RGB。尚未安裝到運行中的 AstrBot，也尚未做真實 Discord 按鈕與刪除驗收。
+
+`/dc_clean` 使用 AstrBot 的 `GreedyStr` 接收完整參數（不要加預設值，框架依型別接收剩餘文字，無參數時傳入空字串）。預覽與每次按鈕事件均透過 `Context.get_config(event.unified_msg_origin)` 重新核對 `admins_id`，不查詢 Discord 成員或頻道管理權限。回歸測試涵蓋 AstrBot 管理員沒有 Discord 管理權仍可清理、僅 Discord 管理員被拒、預覽後移除 AstrBot 管理權被拒，以及同指令時間／ID／連結辨識與用法提示。
 
 測試執行真實選取／刪除／預覽方法，只替換 AstrBot 載入邊界與 Discord 網路物件。涵蓋指定連結範圍、時間邊界、其他作者排除、確認後內容改變、只刪凍結 ID、權限／操作者隔離、單訊息翻頁、單次確認、取消及稽核寫入失敗。這不等同部署到實際伺服器的端到端驗收。
 
@@ -28,6 +30,8 @@ ruff format --check .
 
 - [AstrBot v4.29.4 Discord client](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.4/astrbot/core/platform/sources/discord/client.py)
 - [Discord adapter](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.4/astrbot/core/platform/sources/discord/discord_platform_adapter.py)
+- [AstrBot 管理員判定](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.4/astrbot/core/pipeline/waking_check/stage.py)
+- [指令參數與 GreedyStr](https://github.com/AstrBotDevs/AstrBot/blob/v4.29.4/astrbot/core/star/filter/command.py)
 - [Pycord UI API](https://docs.pycord.dev/en/stable/api/ui_kit.html)
 - [Discord Delete Message API](https://docs.discord.com/developers/resources/message#delete-message)
 

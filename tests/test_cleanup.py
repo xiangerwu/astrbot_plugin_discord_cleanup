@@ -19,18 +19,38 @@ sys.modules[package.__name__] = package
 cleanup = importlib.import_module("cleanup_under_test.core.cleanup")
 
 # Only the AstrBot loading boundary is replaced. Pycord and plugin methods are real.
-for name in ["astrbot", "astrbot.api", "astrbot.api.event", "astrbot.api.star"]:
+for name in [
+    "astrbot",
+    "astrbot.api",
+    "astrbot.api.event",
+    "astrbot.api.star",
+    "astrbot.core",
+    "astrbot.core.star",
+    "astrbot.core.star.filter",
+    "astrbot.core.star.filter.command",
+]:
     sys.modules[name] = types.ModuleType(name)
+sys.modules["astrbot.core.star.filter.command"].GreedyStr = type(
+    "GreedyStr", (str,), {}
+)
+registered_commands = []
+
+
+def command(name, **kwargs):
+    registered_commands.append(name)
+    return lambda fn: fn
+
+
 sys.modules["astrbot.api"].logger = logging.getLogger("cleanup-test")
 sys.modules["astrbot.api.event"].AstrMessageEvent = object
 sys.modules["astrbot.api.event"].filter = types.SimpleNamespace(
-    command=lambda *a, **kw: lambda fn: fn,
+    command=command,
     event_message_type=lambda *a, **kw: lambda fn: fn,
     EventMessageType=types.SimpleNamespace(ALL="all"),
 )
 sys.modules["astrbot.api.star"].Context = object
 sys.modules["astrbot.api.star"].Star = type(
-    "Star", (), {"__init__": lambda self, context: None}
+    "Star", (), {"__init__": lambda self, context: setattr(self, "context", context)}
 )
 sys.modules["astrbot.api.star"].StarTools = types.SimpleNamespace(
     get_data_dir=lambda name: ROOT
@@ -212,11 +232,14 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
 class PluginTests(unittest.IsolatedAsyncioTestCase):
     def setup_event(self):
         self.channel = Channel()
-        self.plugin = main.DiscordCleanupPlugin(None)
+        self.config = {"admins_id": ["90"]}
+        self.context = types.SimpleNamespace(get_config=Mock(return_value=self.config))
+        self.plugin = main.DiscordCleanupPlugin(self.context)
         self.event = types.SimpleNamespace(
             get_platform_name=lambda: "discord",
             get_self_id=lambda: "10",
             get_sender_id=lambda: "90",
+            unified_msg_origin="discord:GroupMessage:50",
             stop_event=Mock(),
             client=types.SimpleNamespace(user=types.SimpleNamespace(id=10)),
             interaction_followup_webhook=None,
@@ -239,9 +262,12 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_single_preview_pagination_and_one_time_confirmation(self):
         self.setup_event()
+        self.channel.can_manage = (
+            False  # AstrBot owner need not be a Discord moderator.
+        )
         for number in range(1, 7):
             self.channel.add(number)
-        await self.plugin.clean_messages(self.event, "1,2,3,4,5,6")
+        await self.plugin.clean(self.event, "1,2,3,4,5,6")
         self.event.stop_event.assert_called()
         self.channel.send.assert_awaited_once()
         self.assertEqual(self.channel.deleted, [])
@@ -262,17 +288,18 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.channel.deleted, list(range(1, 7)))
             raw.followup.send.assert_awaited_once()
         self.channel.send.assert_awaited_once()
+        self.channel.guild.fetch_member.assert_not_awaited()
 
     async def test_wrong_operator_channel_message_and_revoked_permission(self):
         self.setup_event()
         self.channel.add(1)
-        await self.plugin.clean_messages(self.event, "1")
+        await self.plugin.clean(self.event, "1")
         token = next(iter(self.plugin.pending))
         for kwargs in [{"owner": 91}, {"channel_id": 51}, {"message_id": 1000}]:
             raw = self.button_event(token, "confirm", **kwargs)
             await self.plugin.handle_button(self.event)
             raw.followup.send.assert_awaited_once()
-        self.channel.can_manage = False
+        self.config["admins_id"] = []
         raw = self.button_event(token, "confirm")
         await self.plugin.handle_button(self.event)
         raw.followup.send.assert_awaited_once()
@@ -282,7 +309,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         for mode in ["cancel", "expiry", "reload"]:
             self.setup_event()
             self.channel.add(1)
-            await self.plugin.clean_messages(self.event, "1")
+            await self.plugin.clean(self.event, "1")
             token = next(iter(self.plugin.pending))
             if mode == "expiry":
                 self.plugin.pending[token].expires = time.monotonic() - 1
@@ -293,13 +320,43 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.channel.deleted, [])
             self.assertNotIn(token, self.plugin.pending)
 
-    async def test_preview_denied_without_moderation_permission(self):
+    async def test_discord_moderator_without_astrbot_admin_is_denied(self):
         self.setup_event()
-        self.channel.can_manage = False
-        await self.plugin.clean_messages(self.event, "1")
+        self.config["admins_id"] = []
+        self.channel.add(1)
+        await self.plugin.clean(self.event, "1")
         self.assertEqual(self.plugin.pending, {})
         self.assertEqual(self.channel.deleted, [])
         self.channel.send.assert_awaited_once()
+        self.assertIn("AstrBot", self.channel.send.call_args.args[0])
+
+    async def test_unified_command_detects_targets_time_and_shows_usage(self):
+        self.assertEqual(registered_commands, ["dc_clean"])
+        for arguments in [
+            "1 https://discord.com/channels/60/50/2",
+            "1, 2",
+            "2026-11-08T04:07 2026-11-08T04:08",
+        ]:
+            with self.subTest(arguments=arguments):
+                self.setup_event()
+                self.channel.add(1)
+                self.channel.add(2)
+                await self.plugin.clean(self.event, arguments)
+                pending = next(iter(self.plugin.pending.values()))
+                self.assertEqual([row["id"] for row in pending.rows], [1, 2])
+                self.context.get_config.assert_called_with(
+                    self.event.unified_msg_origin
+                )
+                self.assertEqual(self.channel.deleted, [])
+        for arguments in ["", "help", "bad", "2026-11-08T04:07", "1 invalid"]:
+            with self.subTest(arguments=arguments):
+                self.setup_event()
+                self.channel.add(1)
+                await self.plugin.clean(self.event, arguments)
+                self.assertEqual(self.plugin.pending, {})
+                self.channel.send.assert_awaited_once()
+                self.assertIn("/dc_clean", self.channel.send.call_args.args[0])
+                self.assertEqual(self.channel.deleted, [])
 
     async def test_slash_followup_and_markdown_size(self):
         self.setup_event()
@@ -311,7 +368,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             send=AsyncMock(return_value=types.SimpleNamespace(id=999))
         )
         self.event.interaction_followup_webhook = webhook
-        await self.plugin.clean_messages(self.event, "1,2,3,4,5")
+        await self.plugin.clean(self.event, "1,2,3,4,5")
         webhook.send.assert_awaited_once()
         self.channel.send.assert_not_awaited()
         args, kwargs = webhook.send.call_args
