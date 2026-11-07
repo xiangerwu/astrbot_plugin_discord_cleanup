@@ -14,6 +14,10 @@ v0.1.1 使用一般 `event_message_type(ALL)` 處理器，會被 WakingCheckStag
 
 ## 檢查
 
+v0.1.6 修正原生指令在重連後的身分誤判。AstrBot 的 `bot_self_id` 初始為 `None`，由 `run()` 內的 `on_received` 設定；原生 `_create_dynamic_callback` 可先執行，直接把尚未初始化的值放入事件。插件現在以互動的 `application_id` 與已登入的 `client.user.id` 核對身分，不依賴此快取；訊息選取及刪除仍核對精確作者 ID。回歸測試將原 AstrBot 回呼產生的空 self_id 事件交給真正的 `clean()`，修正前無法建立預覽，修正後建立私人預覽並排除其他作者。另驗證錯誤或缺少 application_id 仍拒絕。
+
+2026-11-08（v0.1.6）：**22 項單元測試、13 項 AstrBot 路由／原生回呼測試通過**，包含四個按鈕；Ruff 檢查及格式驗證通過。尚未部署此修正或完成真實 Discord 操作驗收。
+
 在插件根目錄、已具備 AstrBot 的 Pycord 依賴的環境執行：
 
 ```bash

@@ -9,7 +9,7 @@
 測試與檔案審核完成後，將版本號及文件一併提交、推送。已提交版本可在建立 `dist/` 目錄後使用：
 
 ```bash
-git archive --format=zip --output=dist/astrbot_plugin_discord_cleanup-0.1.5.zip HEAD
+git archive --format=zip --output=dist/astrbot_plugin_discord_cleanup-0.1.6.zip HEAD
 ```
 
 這個命令只封裝 HEAD，不包括未提交內容。打包後檢查 ZIP 項目，確認沒有執行資料或秘密。

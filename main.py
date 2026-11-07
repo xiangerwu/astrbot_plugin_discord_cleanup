@@ -118,7 +118,9 @@ class DiscordCleanupPlugin(Star):
         channel = raw.channel
         try:
             bot_id = event.client.user.id
-            if str(bot_id) != str(event.get_self_id()):
+            # AstrBot's cached self_id can be None for the first slash command after reconnect.
+            # Discord supplies the receiving application ID on the interaction itself.
+            if raw.application_id != bot_id:
                 raise ValueError("機器人身分不一致，已停止。")
             owner_id = int(event.get_sender_id())
             self.check_operator(event, channel)

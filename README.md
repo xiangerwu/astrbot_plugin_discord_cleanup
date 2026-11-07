@@ -18,7 +18,9 @@
 
 將發布 ZIP 透過 WebUI 安裝，或將本目錄放到 `data/plugins/astrbot_plugin_discord_cleanup`，重載插件。Discord adapter 必須開啟「指令註冊」並已同步 `/dc_clean`；若指令選單沒有它，先啟用指令註冊，再於 WebUI 停用、啟用 Discord 平台連線以重新同步。不需更動或重新輸入機器人 Token。
 
-更新至 v0.1.5 後重載插件，再從 Discord 指令選單選擇 `/dc_clean`。已有原生指令時不需重啟 AstrBot 或重新連線 Discord。舊預覽全部失效，請重新建立私人預覽。
+更新至 v0.1.6 後重載插件，再從 Discord 指令選單選擇 `/dc_clean`。已有原生指令時不需重啟 AstrBot 或重新連線 Discord。舊預覽全部失效，請重新建立私人預覽。若首次安裝後指令未出現在選單，需重新連線 Discord 平台，讓 AstrBot 同步原生指令。
+
+v0.1.6 修正重連後立即執行原生指令被誤判「機器人身分不一致」：改以 Discord 互動的應用程式 ID 核對登入機器人，不依賴 AstrBot 尚未初始化的自身 ID 快取。仍只允許清理目前機器人自己的訊息。
 
 也可在 AstrBot WebUI 透過公開倉庫網址安裝：
 

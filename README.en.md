@@ -10,7 +10,9 @@ An AstrBot plugin that deletes only messages authored by the **currently connect
 
 Requires AstrBot 4.29.4+, Python 3.12+ and its existing Discord/Pycord adapter. No additional runtime dependencies or bot token configuration. Install a release ZIP through WebUI, or copy this directory to `data/plugins/astrbot_plugin_discord_cleanup`, then reload the plugin. Enable command registration in the Discord adapter. If `/dc_clean` is missing from Discord's command picker, disable and re-enable the Discord platform connection to synchronize commands.
 
-After upgrading to v0.1.5, reload the plugin and select `/dc_clean` in Discord's native command picker. Existing native commands do not require an AstrBot restart or Discord reconnection. Old previews expire; create a new private preview.
+After upgrading to v0.1.6, reload the plugin and select `/dc_clean` in Discord's native command picker. Existing native commands do not require an AstrBot restart or Discord reconnection. Old previews expire; create a new private preview. If the command is missing after first installation, reconnect the Discord platform so AstrBot synchronizes native commands.
+
+v0.1.6 fixes the false bot identity mismatch immediately after reconnecting: it compares the interaction's Discord application ID with the logged-in bot instead of AstrBot's uninitialized self-ID cache. Only messages authored by the current bot remain eligible.
 
 You can also install from the public repository URL in AstrBot WebUI:
 

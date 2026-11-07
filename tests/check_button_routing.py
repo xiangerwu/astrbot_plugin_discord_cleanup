@@ -160,14 +160,20 @@ def main(root):
 
     class RoutingTests(fixtures.PluginTests):
         async def test_native_core_callback_preserves_private_ack_and_event(self):
+            self.setup_event()
+            self.channel.add(1)
+            self.channel.add(2, author=20)
             adapter = types.SimpleNamespace(
-                bot_self_id="10",
+                bot_self_id=None,  # Fresh connection, before the first ordinary message.
                 handle_msg=AsyncMock(),
                 _get_message_type=lambda *args: "group",
                 _get_channel_id=lambda channel: str(channel.id),
                 _get_group_name=lambda channel: "test",
             )
-            interaction = types.SimpleNamespace(
+            interaction = Mock(
+                spec=discord.Interaction,
+                application_id=10,
+                channel=self.channel,
                 type=discord.InteractionType.application_command,
                 id=1,
                 token="test",
@@ -181,8 +187,8 @@ def main(root):
             ctx = types.SimpleNamespace(
                 defer=response.defer,
                 interaction=interaction,
-                followup=object(),
-                channel=types.SimpleNamespace(id=50),
+                followup=self.event.interaction_followup_webhook,
+                channel=self.channel,
                 channel_id=50,
                 guild_id=60,
                 author=types.SimpleNamespace(id=90, display_name="owner"),
@@ -205,6 +211,17 @@ def main(root):
             self.assertIs(message.raw_message, interaction)
             self.assertTrue(message.raw_message.data[fixtures.main.PRIVATE_ACK])
             self.assertIs(followup, ctx.followup)
+            self.assertIsNone(message.self_id)
+            self.event.message_obj = message
+            self.event.get_self_id = lambda: message.self_id
+            await self.plugin.clean(self.event, "1 2")
+            self.assertEqual(len(self.plugin.pending), 1)
+            preview = next(iter(self.plugin.pending.values()))
+            self.assertEqual([row["id"] for row in preview.rows], [1])
+            self.assertEqual(preview.skipped, 1)
+            self.assertTrue(self.reply.call_args.kwargs["ephemeral"])
+            self.channel.send.assert_not_awaited()
+            self.assertEqual(self.channel.deleted, [])
 
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(RoutingTests)
     result = unittest.TextTestRunner(verbosity=2).run(suite)

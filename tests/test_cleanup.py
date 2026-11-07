@@ -384,6 +384,7 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.plugin = main.DiscordCleanupPlugin(self.context)
         raw = Mock(spec=discord.Interaction)
         raw.channel = self.channel
+        raw.application_id = 10
         raw.data = {main.PRIVATE_ACK: True}
         self.event = types.SimpleNamespace(
             get_platform_name=lambda: "discord",
@@ -395,6 +396,27 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
             interaction_followup_webhook=types.SimpleNamespace(send=self.reply),
             message_obj=types.SimpleNamespace(raw_message=raw),
         )
+
+    async def test_native_identity_uses_discord_application_not_adapter_cache(self):
+        for application_id in [10, 20, None]:
+            with self.subTest(application_id=application_id):
+                self.setup_event()
+                self.event.get_self_id = lambda: None
+                self.event.message_obj.raw_message.application_id = application_id
+                self.channel.add(1)
+                self.channel.add(2, author=20)
+                await self.plugin.clean(self.event, "1 2")
+                if application_id == 10:
+                    self.assertEqual(len(self.plugin.pending), 1)
+                    preview = next(iter(self.plugin.pending.values()))
+                    self.assertEqual([row["id"] for row in preview.rows], [1])
+                    self.assertEqual(preview.skipped, 1)
+                else:
+                    self.assertEqual(self.plugin.pending, {})
+                    self.assertIn("機器人身分不一致", self.reply.call_args.args[0])
+                self.assertTrue(self.reply.call_args.kwargs["ephemeral"])
+                self.assertEqual(self.channel.deleted, [])
+                self.channel.send.assert_not_awaited()
 
     async def test_plain_text_and_public_ack_never_publish_preview(self):
         self.setup_event()
