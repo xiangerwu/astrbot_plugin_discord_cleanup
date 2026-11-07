@@ -45,6 +45,7 @@ sys.modules["astrbot.api"].logger = logging.getLogger("cleanup-test")
 sys.modules["astrbot.api.event"].AstrMessageEvent = object
 sys.modules["astrbot.api.event"].filter = types.SimpleNamespace(
     command=command,
+    button_action=lambda *a, **kw: lambda fn: fn,
     event_message_type=lambda *a, **kw: lambda fn: fn,
     EventMessageType=types.SimpleNamespace(ALL="all"),
 )
@@ -115,6 +116,15 @@ class Channel:
 
 
 class ParsingTests(unittest.TestCase):
+    def test_message_link_limit_is_100_distinct_targets(self):
+        links = [f"https://discord.com/channels/60/50/{i}" for i in range(1, 102)]
+        self.assertEqual(len(cleanup.parse_ids(" ".join(links[:100]), 60, 50)), 100)
+        self.assertEqual(
+            len(cleanup.parse_ids(" ".join(links[:100] + links[:1]), 60, 50)), 100
+        )
+        with self.assertRaises(ValueError):
+            cleanup.parse_ids(" ".join(links), 60, 50)
+
     def test_ids_scope_dedup_and_invalid_values(self):
         self.assertEqual(
             cleanup.parse_ids("123,https://discord.com/channels/60/50/124,123", 60, 50),
@@ -260,6 +270,9 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.event.message_obj.raw_message = raw
         return raw
 
+    async def dispatch_button(self):
+        await self.plugin.handle_button(self.event)
+
     async def test_single_preview_pagination_and_one_time_confirmation(self):
         self.setup_event()
         self.channel.can_manage = (
@@ -274,17 +287,36 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         token, pending = next(iter(self.plugin.pending.items()))
         self.assertLess(len(self.plugin.render(pending)), 2000)
         raw = self.button_event(token, "next")
-        await self.plugin.handle_button(self.event)
+        await self.dispatch_button()
         raw.edit_original_response.assert_awaited_once()
         self.channel.send.assert_awaited_once()
         self.assertEqual(pending.page, 1)
+        view = raw.edit_original_response.call_args.kwargs["view"]
+        self.assertEqual(
+            [item.disabled for item in view.children], [False, True, False, False]
+        )
+        raw = self.button_event(token, "prev")
+        await self.dispatch_button()
+        self.assertEqual(pending.page, 0)
+        view = raw.edit_original_response.call_args.kwargs["view"]
+        self.assertEqual(
+            [item.disabled for item in view.children], [True, False, False, False]
+        )
+        self.assertEqual(
+            [item.label for item in view.children],
+            ["上一頁", "下一頁", "確認刪除全部 6 則", "取消"],
+        )
+        for action, expected_page in [("prev", 0), ("next", 1), ("next", 1)]:
+            self.button_event(token, action)
+            await self.dispatch_button()
+            self.assertEqual(pending.page, expected_page)
         with tempfile.TemporaryDirectory() as directory:
             self.plugin.data_dir = Path(directory)
             raw = self.button_event(token, "confirm")
-            await self.plugin.handle_button(self.event)
+            await self.dispatch_button()
             self.assertEqual(raw.edit_original_response.await_count, 2)
             self.assertEqual(self.channel.deleted, list(range(1, 7)))
-            await self.plugin.handle_button(self.event)
+            await self.dispatch_button()
             self.assertEqual(self.channel.deleted, list(range(1, 7)))
             raw.followup.send.assert_awaited_once()
         self.channel.send.assert_awaited_once()
@@ -295,14 +327,18 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
         self.channel.add(1)
         await self.plugin.clean(self.event, "1")
         token = next(iter(self.plugin.pending))
-        for kwargs in [{"owner": 91}, {"channel_id": 51}, {"message_id": 1000}]:
-            raw = self.button_event(token, "confirm", **kwargs)
-            await self.plugin.handle_button(self.event)
-            raw.followup.send.assert_awaited_once()
+        for action in ["prev", "next", "confirm", "cancel"]:
+            for kwargs in [{"owner": 91}, {"channel_id": 51}, {"message_id": 1000}]:
+                raw = self.button_event(token, action, **kwargs)
+                await self.dispatch_button()
+                raw.followup.send.assert_awaited_once()
+                raw.edit_original_response.assert_not_awaited()
         self.config["admins_id"] = []
-        raw = self.button_event(token, "confirm")
-        await self.plugin.handle_button(self.event)
-        raw.followup.send.assert_awaited_once()
+        for action in ["prev", "next", "confirm", "cancel"]:
+            raw = self.button_event(token, action)
+            await self.dispatch_button()
+            raw.followup.send.assert_awaited_once()
+            raw.edit_original_response.assert_not_awaited()
         self.assertEqual(self.channel.deleted, [])
 
     async def test_cancel_expiry_and_reload_never_delete(self):
@@ -315,10 +351,25 @@ class PluginTests(unittest.IsolatedAsyncioTestCase):
                 self.plugin.pending[token].expires = time.monotonic() - 1
             elif mode == "reload":
                 await self.plugin.terminate()
-            self.button_event(token, "cancel" if mode == "cancel" else "confirm")
-            await self.plugin.handle_button(self.event)
+            raw = self.button_event(token, "cancel" if mode == "cancel" else "confirm")
+            await self.dispatch_button()
             self.assertEqual(self.channel.deleted, [])
             self.assertNotIn(token, self.plugin.pending)
+            if mode == "cancel":
+                raw.edit_original_response.assert_awaited_once_with(
+                    content="已取消清理，沒有刪除任何訊息。", view=None
+                )
+                await self.dispatch_button()
+                raw.followup.send.assert_awaited_once()
+
+    async def test_other_plugins_buttons_are_untouched(self):
+        self.setup_event()
+        raw = self.button_event("unrelated", "confirm")
+        raw.data["custom_id"] = "another-plugin:confirm"
+        await self.dispatch_button()
+        self.event.stop_event.assert_not_called()
+        raw.edit_original_response.assert_not_awaited()
+        raw.followup.send.assert_not_awaited()
 
     async def test_discord_moderator_without_astrbot_admin_is_denied(self):
         self.setup_event()

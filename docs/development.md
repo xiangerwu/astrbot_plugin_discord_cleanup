@@ -4,7 +4,9 @@
 
 `main.py` 接入 AstrBot 指令與 Discord 按鈕事件，管理短效預覽。`core/cleanup.py` 負責解析目標、查詢、作者檢查、刪除與紀錄。沒有自建 HTTP client、額外 Token、資料庫、排程或 LLM 工具，沿用 AstrBot 的 Pycord client 及 rate-limit 處理。
 
-AstrBot 4.29.4 的 Discord client 會先 acknowledge 按鈕，再轉成 AstrMessageEvent。本插件以 `View.stop()` 停止原生 Pycord callback，保留按鈕外觀，由高優先序事件處理器接手自身 `dcclean:` 前綴，並 `stop_event()`，避免另一個 callback 或 LLM 回覆。此方式亦支援沒有 `store=False` 參數的 Pycord 2.6.1。原生斜線指令已由 adapter defer，因此預覽使用它的 followup；按鈕後續編輯原訊息。
+AstrBot 4.29.4 的 Discord client 會先 acknowledge 按鈕，再轉成 AstrMessageEvent。本插件以 `View.stop()` 停止原生 Pycord callback，保留按鈕外觀，使用 `@filter.button_action()` 接手自身 `dcclean:` 前綴，並 `stop_event()`，避免另一個 callback 或 LLM 回覆。其他前綴直接返回。此方式亦支援沒有 `store=False` 參數的 Pycord 2.6.1。原生斜線指令已由 adapter defer，因此預覽使用它的 followup；按鈕後續編輯原訊息。
+
+v0.1.1 使用一般 `event_message_type(ALL)` 處理器，會被 WakingCheckStage 的按鈕專用篩選跳過，優先序無法繞過。v0.1.2 修正這個共同入口，四個按鈕沿用相同的權限與清單驗證。
 
 ## 檢查
 
@@ -12,13 +14,18 @@ AstrBot 4.29.4 的 Discord client 會先 acknowledge 按鈕，再轉成 AstrMess
 
 ```bash
 python -m unittest discover -s tests -p 'test_*.py' -v
+python tests/check_button_routing.py /path/to/AstrBot
 ruff check .
 ruff format --check .
 ```
 
 只跑本機測試時可安裝 `py-cord==2.6.1`、`ruff`、`PyYAML`；Python 3.13+ 另需 `audioop-lts`，AstrBot 本身已宣告這項相容依賴。這些開發環境檔案不放進發布包。
 
-2026-11-08（v0.1.1）：Windows／Python 3.14、Pycord 2.6.1 的 **13 項測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。圖片已確認：logo 為 1254×1254 RGBA（包含透明像素），README 橫幅為 1672×941 RGB。尚未安裝到運行中的 AstrBot，也尚未做真實 Discord 按鈕與刪除驗收。
+2026-11-08（v0.1.2）：Windows／Python 3.14、Pycord 2.6.1 的 **15 項單元測試與 7 項 AstrBot 路由測試全部通過**，Ruff 0.17.4 檢查與格式驗證通過。路由測試在修正前有 4 項失敗，均為按鈕未進入處理器；修正後全部通過。尚未將此版部署到運行中的 AstrBot，也尚未做真實 Discord 點擊與刪除驗收。
+
+路由測試需指定 AstrBot v4.29.4 原始碼目錄，讀取 `astrbot/core/pipeline/waking_check/stage.py`、`astrbot/core/star/filter/button_action.py`、`astrbot/core/star/filter/event_message_type.py`、`astrbot/core/star/register/star_handler.py`。以 AST 選取原始定義後原樣執行按鈕註冊、篩選及 WakingCheckStage，重用插件測試；不複製路由邏輯、不啟動機器人。只替換網路、資料庫與無關服務邊界。必須與單元測試分開執行，避免替換的載入邊界互相影響。
+
+按鈕驗證包含下一頁、上一頁、首尾頁停用與頁碼界限、確認全清單且只執行一次、取消更新原預覽且保留所有訊息。四種操作均檢查錯誤操作者／頻道／預覽訊息以及撤銷 AstrBot 管理權限；也檢查其他插件按鈕不被回覆或攔截。目標數量另驗證 100 個不同連結通過、重複連結不重複計數、101 個拒絕。
 
 `/dc_clean` 使用 AstrBot 的 `GreedyStr` 接收完整參數（不要加預設值，框架依型別接收剩餘文字，無參數時傳入空字串）。預覽與每次按鈕事件均透過 `Context.get_config(event.unified_msg_origin)` 重新核對 `admins_id`，不查詢 Discord 成員或頻道管理權限。回歸測試涵蓋 AstrBot 管理員沒有 Discord 管理權仍可清理、僅 Discord 管理員被拒、預覽後移除 AstrBot 管理權被拒，以及同指令時間／ID／連結辨識與用法提示。
 

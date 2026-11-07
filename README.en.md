@@ -30,9 +30,13 @@ Metadata explicitly restricts platform support to Discord and includes Discord, 
 
 The single `/dc_clean` command detects timestamps or message targets automatically. Empty input, `help`, and invalid arguments show usage. Use real IDs in place of these examples. Message links must match the current guild/channel. Mix IDs and full `https://discord.com/channels/GUILD/CHANNEL/MESSAGE` links separated by spaces or commas.
 
+At most **100 distinct message IDs/links** per request; duplicates count once. A 101st distinct target rejects the entire selection. Discord input length limits still apply; use shorter IDs or a narrower time window when full links do not fit.
+
 Times are start-inclusive/end-exclusive. Naive ISO timestamps use UTC+08:00; explicit offsets and `Z` are accepted. AstrBot 4.29.4 exposes a single slash-command `params` field: enter both timestamps separated by a space, or the target list. Leave it empty for usage.
 
 ## Preview and safeguards
+
+v0.1.2 fixes button routing through AstrBot 4.29.4's dedicated button handler. Previous is disabled on the first page, Next on the last; both are disabled for a single page. After upgrading from v0.1.1, reload the plugin and run `/dc_clean` again because old previews expire on reload. This fix does not require reconnecting Discord.
 
 - One public preview message, five entries per page. Navigation, cancellation, progress and results edit the same message. No per-target notifications or LLM calls.
 - The operator must be registered in AstrBot's current session configuration (`admins_id`). Discord moderator status or Manage Messages is not required and does not grant access. Only the original operator can confirm, and the current AstrBot admin list is checked again; removal after preview prevents confirmation.

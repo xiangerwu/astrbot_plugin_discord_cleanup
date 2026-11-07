@@ -130,7 +130,8 @@ class DiscordCleanupPlugin(Star):
                 "無法讀取或顯示清單，沒有執行刪除。請檢查頻道讀取歷史與發送訊息權限。",
             )
 
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=maxsize + 2)
+    # AstrBot routes components only to ButtonActionFilter handlers, even at high priority.
+    @filter.button_action(priority=maxsize + 2)
     async def handle_button(self, event: AstrMessageEvent):
         if event.get_platform_name() != "discord":
             return

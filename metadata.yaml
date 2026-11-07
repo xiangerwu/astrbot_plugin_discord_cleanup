@@ -1,7 +1,7 @@
 name: astrbot_plugin_discord_cleanup
 display_name: Discord 精準清理
 desc: 僅 AstrBot 管理員可用 /dc_clean 依時間或訊息連結／ID 清理自身訊息；單則分頁預覽、本人確認、刪除前再驗證作者並保存紀錄。
-version: 0.1.1
+version: 0.1.2
 author: xiangerwu
 repo: https://github.com/xiangerwu/astrbot_plugin_discord_cleanup
 astrbot_version: '>=4.29.4'
