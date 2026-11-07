@@ -49,19 +49,7 @@ def parse_time_range(start, end):
 
 def is_own(message, channel_id, bot_id):
     # The bot flag alone also matches other bots; require this client's exact ID.
-    return (
-        message.channel.id == channel_id
-        and message.author.id == bot_id
-        and (
-            message.webhook_id is None
-            # Interaction webhooks use the application ID. Pycord 2.6.1 does not
-            # expose Message.application_id; require its webhook ID and interaction metadata.
-            or (
-                message.webhook_id == bot_id
-                and message.interaction_metadata is not None
-            )
-        )
-    )
+    return message.channel.id == channel_id and message.author.id == bot_id
 
 
 def snapshot(message):

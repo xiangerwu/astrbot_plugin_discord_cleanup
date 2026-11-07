@@ -161,7 +161,7 @@ class ParsingTests(unittest.TestCase):
 
 
 class CleanupTests(unittest.IsolatedAsyncioTestCase):
-    async def test_own_application_replies_and_identity_recheck(self):
+    async def test_all_own_message_forms_and_author_recheck(self):
         channel = Channel()
         channel.add(1, webhook=10, interaction=True)
         channel.add(2, webhook=10, interaction=True)
@@ -172,15 +172,15 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         rows, skipped = await cleanup.select_messages(
             channel, 10, ids=list(range(1, 7))
         )
-        self.assertEqual([row["id"] for row in rows], [1, 2])
-        self.assertEqual(skipped, 4)
-        channel.messages[2].webhook_id = 20
+        self.assertEqual([row["id"] for row in rows], [1, 2, 4, 6])
+        self.assertEqual(skipped, 2)
+        channel.messages[2].author.id = 20
         with tempfile.TemporaryDirectory() as directory:
             counts = await cleanup.delete_selected(
                 channel, 10, rows, 90, Path(directory) / "audit.jsonl"
             )
-        self.assertEqual(channel.deleted, [1])
-        self.assertEqual(counts["deleted"], 1)
+        self.assertEqual(channel.deleted, [1, 4, 6])
+        self.assertEqual(counts["deleted"], 3)
         self.assertEqual(counts["refused"], 1)
 
     async def test_actual_pycord_interaction_message_ownership(self):
@@ -223,17 +223,19 @@ class CleanupTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(cleanup.is_own(message, 50, 10))
         message.interaction_metadata = None
-        self.assertFalse(cleanup.is_own(message, 50, 10))
+        self.assertTrue(cleanup.is_own(message, 50, 10))
+        self.assertFalse(cleanup.is_own(message, 51, 10))
+        self.assertFalse(cleanup.is_own(message, 50, 20))
 
-    async def test_exact_ids_filter_other_people_bots_and_webhooks(self):
+    async def test_exact_ids_filter_other_authors(self):
         channel = Channel()
         channel.add(1)
         channel.add(2, author=20)
         channel.add(3, author=30)
         channel.add(4, webhook=10)
         rows, skipped = await cleanup.select_messages(channel, 10, ids=[1, 2, 3, 4, 5])
-        self.assertEqual([row["id"] for row in rows], [1])
-        self.assertEqual(skipped, 4)
+        self.assertEqual([row["id"] for row in rows], [1, 4])
+        self.assertEqual(skipped, 3)
         self.assertEqual(channel.deleted, [])
 
     async def test_time_boundaries_and_scan_limits(self):
